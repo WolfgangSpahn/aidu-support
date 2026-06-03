@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from aidu.support.filesystem.search import find_up
 
 

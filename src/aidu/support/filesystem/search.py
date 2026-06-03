@@ -28,7 +28,6 @@ def find_up(
     home = Path.home().resolve()
 
     while True:
-
         candidate = current / filename
 
         if candidate.exists():
