@@ -5,7 +5,9 @@ description = "General support utilities and infrastructural primitives for AIDu
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
 
-dependencies = []
+dependencies = [
+    "rich>=14.3.2",
+]
 
 [dependency-groups]
 dev = [
@@ -25,10 +27,7 @@ include = [
 ]
 
 [tool.hatch.build.targets.wheel]
-only-include = ["src/aidu"]
-
-[tool.hatch.build.targets.wheel.sources]
-"src" = ""
+packages = ["src/aidu", "src/scoring"]
 
 # -------------------------------------------------------------------
 # Linter / formatter configuration
