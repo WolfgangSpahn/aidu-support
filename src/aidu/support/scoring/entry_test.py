@@ -120,8 +120,9 @@ def poll_responses_to_indices(
     one explicit translation and rejects text that is not in the corresponding
     authored question.
 
-    A response with ``skip: true`` is omitted, preserving the specification's
-    distinction between a skipped question and a submitted empty selection.
+    A response with ``skip: true`` becomes an empty selection. This records
+    that the learner could not currently demonstrate the question's knowledge,
+    instead of silently restoring a neutral 50% prior.
     """
 
     questions_by_id = {question.id: question for question in questions}
@@ -137,6 +138,7 @@ def poll_responses_to_indices(
         if not isinstance(raw_response, Mapping):
             raise ValueError(f"Response for question {question_id!r} must be a mapping.")
         if raw_response.get("skip") is True:
+            normalized[question_id] = ()
             continue
         if raw_response.get("skip") not in {None, False}:
             raise ValueError(f"Response for question {question_id!r} has an invalid skip value.")
@@ -190,15 +192,32 @@ def raw_score_to_prior(raw_score: float) -> float:
     return max(0.1, min(0.9, 0.5 + 0.4 * raw_score))
 
 
+def conservative_target_prior(
+    overall_score: float,
+    target_question_results: Sequence[float],
+) -> float:
+    """Use the understandable whole-test score as every target's safe prior.
+
+    Option annotations remain available as diagnostic evidence, but they are
+    too sparse and correlated to justify raising initial target mastery above
+    the score the learner and teacher actually saw.
+    """
+    if not 0.0 <= overall_score <= 1.0:
+        raise ValueError("Overall score must be between 0.0 and 1.0.")
+    if any(result not in {0.0, 1.0} for result in target_question_results):
+        raise ValueError("Target question results must be binary.")
+    return overall_score
+
+
 def score_entry_test(
     questions: Sequence[ScoringQuestion],
     responses: Mapping[str, Sequence[int]],
 ) -> EntryTestScore:
     """Aggregate submitted option decisions into target-level priors.
 
-    Missing response ids produce no evidence.  A present empty sequence means
-    the question was seen and submitted without a selection, so missed correct
-    options still contribute ``-0.4``.
+    Missing response ids produce no target evidence. A present empty sequence,
+    including an explicit skip, means the learner could not demonstrate the
+    knowledge. The overall score uses every authored question as its denominator.
     """
 
     questions_by_id = {question.id: question for question in questions}
@@ -210,6 +229,15 @@ def score_entry_test(
 
     evidence_values: dict[str, list[float]] = defaultdict(list)
     evidence_questions: dict[str, set[str]] = defaultdict(set)
+    target_question_results: dict[str, list[float]] = defaultdict(list)
+
+    correct_question_count = sum(
+        1
+        for question in questions
+        if question.id in responses
+        and frozenset(responses[question.id]) == question.solution
+    )
+    overall_score = correct_question_count / len(questions) if questions else 0.0
 
     for question in questions:
         if question.id not in responses:
@@ -219,6 +247,14 @@ def score_entry_test(
             label=f"Response for question {question.id!r}",
         )
         _validate_indices(question.id, selected, len(question.options), "response")
+        question_correct = selected == question.solution
+        question_targets = {
+            target
+            for option in question.options
+            for target in option.targets
+        }
+        for target in question_targets:
+            target_question_results[target].append(1.0 if question_correct else 0.0)
 
         for option_index, option in enumerate(question.options):
             evidence = calculate_option_evidence(
@@ -242,14 +278,21 @@ def score_entry_test(
     }
     priors = {
         target: KnowledgePrior(
-            prior=raw_score_to_prior(sum(target_evidence.values) / len(target_evidence.values)),
+            prior=conservative_target_prior(
+                overall_score,
+                target_question_results[target],
+            ),
             raw_score=sum(target_evidence.values) / len(target_evidence.values),
             evidence_count=len(target_evidence.values),
             question_count=len(target_evidence.question_ids),
         )
         for target, target_evidence in evidence.items()
     }
-    return EntryTestScore(priors=priors, evidence=evidence)
+    return EntryTestScore(
+        overall_score=overall_score,
+        priors=priors,
+        evidence=evidence,
+    )
 
 
 def score_poll_test(

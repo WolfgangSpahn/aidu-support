@@ -44,5 +44,6 @@ class TargetEvidence:
 class EntryTestScore:
     """Complete standalone scoring result."""
 
+    overall_score: float
     priors: dict[str, KnowledgePrior]
     evidence: dict[str, TargetEvidence]
