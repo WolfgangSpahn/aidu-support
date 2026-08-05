@@ -46,12 +46,12 @@ def test_reference_example_and_multi_target_distribution():
     questions = parse_questions(QUESTIONS)
     score = score_entry_test(questions, {"q01": [0, 1, 3]})
 
-    assert score.overall_score == 0.0
-    assert score.evidence["alpha"].values == (1.0, -0.4)
-    assert score.evidence["shared"].values == (1.0, 1.0)
+    assert score.overall_score == pytest.approx(0.5)
+    assert score.evidence["alpha"].values == (2.0, 0.0)
+    assert score.evidence["shared"].values == (2.0, 2.0)
     assert score.evidence["beta"].values == (-1.0, 0.0)
-    assert score.priors["alpha"].raw_score == pytest.approx(0.3)
-    assert score.priors["alpha"].prior == 0.0
+    assert score.priors["alpha"].raw_score == pytest.approx(0.5)
+    assert score.priors["alpha"].prior == pytest.approx(0.5)
     assert score.priors["alpha"].evidence_count == 2
     assert score.priors["alpha"].question_count == 1
 
@@ -66,7 +66,7 @@ def test_target_aggregates_across_distinct_questions():
     ]
     score = score_entry_test(parse_questions(raw), {"q01": [0, 2, 3], "q02": [0]})
 
-    assert score.overall_score == 1.0
+    assert score.overall_score == pytest.approx(2 / 3)
     assert score.priors["alpha"].raw_score == 1.0
     assert score.priors["alpha"].evidence_count == 3
     assert score.priors["alpha"].question_count == 2
@@ -80,12 +80,12 @@ def test_prior_mapping(raw, prior):
     assert raw_score_to_prior(raw) == pytest.approx(prior)
 
 
-def test_skipped_question_has_no_evidence_but_empty_submission_does():
+def test_skipped_or_empty_question_awards_zero_points():
     questions = parse_questions(QUESTIONS)
 
-    assert score_entry_test(questions, {}).priors == {}
+    assert score_entry_test(questions, {}).priors["alpha"].prior == 0.0
     empty = score_entry_test(questions, {"q01": []})
-    assert empty.evidence["alpha"].values == (-0.4, -0.4)
+    assert empty.evidence["alpha"].values == (0.0, 0.0)
 
 
 def test_explicit_skip_is_unknown_not_neutral():
@@ -99,7 +99,7 @@ def test_explicit_skip_is_unknown_not_neutral():
     assert score.priors["shared"].prior == 0.0
 
 
-def test_ten_percent_overall_score_is_the_prior_for_every_target():
+def test_skipped_questions_keep_target_priors_at_the_low_overall_score():
     raw = [
         {
             "id": f"q{index}",
@@ -108,13 +108,20 @@ def test_ten_percent_overall_score_is_the_prior_for_every_target():
         }
         for index in range(10)
     ]
-    responses = {f"q{index}": ([] if index else [0]) for index in range(10)}
+    responses = {
+        f"q{index}": (
+            {"options": ["correct"], "skip": False}
+            if index == 0
+            else {"options": [], "skip": True}
+        )
+        for index in range(10)
+    }
 
-    score = score_entry_test(parse_questions(raw), responses)
+    score = score_poll_test(raw, responses)
 
-    assert score.overall_score == 0.1
+    assert score.overall_score == pytest.approx(0.01)
     assert score.priors["target-0"].prior == pytest.approx(0.1)
-    assert score.priors["target-1"].prior == pytest.approx(0.1)
+    assert score.priors["target-1"].prior == 0.0
 
 
 def test_poll_payload_translates_options_and_preserves_explicit_skip():
@@ -125,7 +132,7 @@ def test_poll_payload_translates_options_and_preserves_explicit_skip():
     ) == {"q01": (3, 0)}
     assert poll_responses_to_indices(
         questions, {"q01": {"options": [], "skip": True}}
-    ) == {"q01": ()}
+    ) == {}
 
 
 def test_high_level_poll_scoring_entry_point():
@@ -133,7 +140,7 @@ def test_high_level_poll_scoring_entry_point():
         QUESTIONS,
         {"q01": {"options": ["A", "B", "D"], "skip": False}},
     )
-    assert score.priors["shared"].prior == 0.0
+    assert score.priors["shared"].prior == 1.0
 
 
 @pytest.mark.parametrize(

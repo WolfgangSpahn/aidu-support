@@ -24,12 +24,10 @@ from .models import (
 )
 
 
-# These asymmetric weights are assessment policy, not tuning parameters hidden
-# in application code.  In particular, missing a correct option is weaker
-# negative evidence than actively selecting an incorrect statement.
-SELECTED_CORRECT = 1.0
+# These point values are the authoritative entry-test assessment contract.
+SELECTED_CORRECT = 2.0
 SELECTED_WRONG = -1.0
-MISSED_CORRECT = -0.4
+MISSED_CORRECT = 0.0
 REJECTED_WRONG = 0.0
 
 
@@ -120,9 +118,8 @@ def poll_responses_to_indices(
     one explicit translation and rejects text that is not in the corresponding
     authored question.
 
-    A response with ``skip: true`` becomes an empty selection. This records
-    that the learner could not currently demonstrate the question's knowledge,
-    instead of silently restoring a neutral 50% prior.
+    A response with ``skip: true`` is omitted from attempted responses. It
+    earns zero points and reduces test coverage without becoming a wrong click.
     """
 
     questions_by_id = {question.id: question for question in questions}
@@ -138,7 +135,6 @@ def poll_responses_to_indices(
         if not isinstance(raw_response, Mapping):
             raise ValueError(f"Response for question {question_id!r} must be a mapping.")
         if raw_response.get("skip") is True:
-            normalized[question_id] = ()
             continue
         if raw_response.get("skip") not in {None, False}:
             raise ValueError(f"Response for question {question_id!r} has an invalid skip value.")
@@ -192,32 +188,16 @@ def raw_score_to_prior(raw_score: float) -> float:
     return max(0.1, min(0.9, 0.5 + 0.4 * raw_score))
 
 
-def conservative_target_prior(
-    overall_score: float,
-    target_question_results: Sequence[float],
-) -> float:
-    """Use the understandable whole-test score as every target's safe prior.
-
-    Option annotations remain available as diagnostic evidence, but they are
-    too sparse and correlated to justify raising initial target mastery above
-    the score the learner and teacher actually saw.
-    """
-    if not 0.0 <= overall_score <= 1.0:
-        raise ValueError("Overall score must be between 0.0 and 1.0.")
-    if any(result not in {0.0, 1.0} for result in target_question_results):
-        raise ValueError("Target question results must be binary.")
-    return overall_score
-
-
 def score_entry_test(
     questions: Sequence[ScoringQuestion],
     responses: Mapping[str, Sequence[int]],
 ) -> EntryTestScore:
     """Aggregate submitted option decisions into target-level priors.
 
-    Missing response ids produce no target evidence. A present empty sequence,
-    including an explicit skip, means the learner could not demonstrate the
-    knowledge. The overall score uses every authored question as its denominator.
+    Selected correct options earn two target points, selected wrong options
+    subtract one, and missed, rejected, or skipped options earn zero. Every
+    The per-target point ratio is multiplied by answered-question coverage, so
+    extensive skipping constrains every target estimate.
     """
 
     questions_by_id = {question.id: question for question in questions}
@@ -229,33 +209,15 @@ def score_entry_test(
 
     evidence_values: dict[str, list[float]] = defaultdict(list)
     evidence_questions: dict[str, set[str]] = defaultdict(set)
-    target_question_results: dict[str, list[float]] = defaultdict(list)
-
-    correct_question_count = sum(
-        1
-        for question in questions
-        if question.id in responses
-        and frozenset(responses[question.id]) == question.solution
-    )
-    overall_score = correct_question_count / len(questions) if questions else 0.0
+    maximum_points: dict[str, float] = defaultdict(float)
+    coverage = len(responses) / len(questions) if questions else 0.0
 
     for question in questions:
-        if question.id not in responses:
-            continue
         selected = _unique_indices(
-            responses[question.id],
+            responses.get(question.id, ()),
             label=f"Response for question {question.id!r}",
         )
         _validate_indices(question.id, selected, len(question.options), "response")
-        question_correct = selected == question.solution
-        question_targets = {
-            target
-            for option in question.options
-            for target in option.targets
-        }
-        for target in question_targets:
-            target_question_results[target].append(1.0 if question_correct else 0.0)
-
         for option_index, option in enumerate(question.options):
             evidence = calculate_option_evidence(
                 option_index,
@@ -268,6 +230,8 @@ def score_entry_test(
             for target in option.targets:
                 evidence_values[target].append(evidence)
                 evidence_questions[target].add(question.id)
+                if option_index in question.solution:
+                    maximum_points[target] += SELECTED_CORRECT
 
     evidence = {
         target: TargetEvidence(
@@ -278,16 +242,28 @@ def score_entry_test(
     }
     priors = {
         target: KnowledgePrior(
-            prior=conservative_target_prior(
-                overall_score,
-                target_question_results[target],
-            ),
-            raw_score=sum(target_evidence.values) / len(target_evidence.values),
+            prior=max(
+                0.0,
+                min(1.0, sum(target_evidence.values) / maximum_points[target]),
+            ) * coverage
+            if maximum_points[target]
+            else 0.0,
+            raw_score=max(
+                -1.0,
+                min(1.0, sum(target_evidence.values) / maximum_points[target]),
+            )
+            if maximum_points[target]
+            else 0.0,
             evidence_count=len(target_evidence.values),
             question_count=len(target_evidence.question_ids),
         )
         for target, target_evidence in evidence.items()
     }
+    overall_score = (
+        sum(prior.prior for prior in priors.values()) / len(priors)
+        if priors
+        else 0.0
+    )
     return EntryTestScore(
         overall_score=overall_score,
         priors=priors,
