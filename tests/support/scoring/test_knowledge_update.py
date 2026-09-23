@@ -1,4 +1,8 @@
 import pytest
+from io import StringIO
+
+from rich.console import Console
+from aidu.support.scoring.knowledge_update import smoke_test
 
 from aidu.support.scoring import (
     KnowledgeEvidenceState,
@@ -6,6 +10,7 @@ from aidu.support.scoring import (
     apply_turn_assessment,
     assessment_weight,
     initialize_from_entry_prior,
+    independence_factor,
     repeated_evidence_factor,
 )
 
@@ -17,6 +22,7 @@ def assessment(**overrides):
         "strength": "moderate",
         "confidence": 0.9,
         "evidence_type": "explanation",
+        "response_mode": "deliberate",
         "support_level": "independent",
     }
     values.update(overrides)
@@ -47,7 +53,7 @@ def test_reference_dialog_update():
     assert updated.last_updated_turn == 1
 
 
-def test_negative_application_uses_negative_support_policy():
+def test_negative_application_uses_negative_independence_policy():
     item = assessment(
         direction="negative",
         strength="strong",
@@ -56,7 +62,23 @@ def test_negative_application_uses_negative_support_policy():
         support_level="guided",
     )
 
-    assert assessment_weight(item) == pytest.approx(0.864)
+    assert assessment_weight(item) == pytest.approx(0.72)
+
+
+def test_response_mode_is_descriptive_not_an_extra_multiplier():
+    deliberate = assessment(strength="weak", response_mode="deliberate")
+    guess = assessment(strength="weak", response_mode="guess")
+
+    assert assessment_weight(deliberate) == assessment_weight(guess)
+
+
+def test_independence_factor_is_selected_by_direction_and_support():
+    assert independence_factor(
+        assessment(direction="positive", support_level="guided")
+    ) == 0.5
+    assert independence_factor(
+        assessment(direction="negative", support_level="guided")
+    ) == 0.9
 
 
 def test_positive_answer_revealed_has_zero_weight():
@@ -95,6 +117,7 @@ def test_repetition_decay_and_turn_cap():
         {"direction": "unknown"},
         {"strength": "huge"},
         {"evidence_type": "other"},
+        {"response_mode": "other"},
         {"support_level": "other"},
     ],
 )
@@ -115,3 +138,19 @@ def test_mastery_without_evidence_is_neutral():
     )
 
     assert state.mastery == 0.5
+
+
+def test_smoke_test_matches_production_shaped_state_transition():
+    output = StringIO()
+    report = smoke_test(Console(file=output, width=240))
+
+    initial = report["initial_state"]["knowledge"]["proton-identity"]
+    final = report["final_state"]["knowledge"]["proton-identity"]
+    assert len(report["targets"]) == 3
+    assert len(report["assessment"]["evidence"]) == 1
+    assert initial["mastery"] == 0.5
+    assert final["negative_evidence"] == pytest.approx(0.225)
+    assert final["mastery"] == pytest.approx(0.5 / 1.225)
+    assert "Learner quote" in output.getvalue()
+    assert "Weight calculation" in output.getvalue()
+    assert "0.25 × 0.90 × 1.00 × 1.00" in output.getvalue()

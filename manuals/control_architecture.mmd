@@ -1,0 +1,38 @@
+%%{init: {
+  "flowchart": {
+    "defaultRenderer": "elk"
+  }
+}}%%
+
+flowchart TB
+
+    subgraph QL["Quality / Supervisor"]
+        direction LR
+
+        UM["Update M̂"]
+        Q["<b>LLM:</b> Judge Intervention Quality"]
+        UX["Update X̂"]
+
+        UM --- Q --- UX
+    end
+
+    subgraph ML["Main Tutor–Learner Loop"]
+        direction LR
+
+        T["Tutor/Learner Turn[n...n-m]"]
+        E["Evidence"]
+        S["State[n,n-1]"]
+        I["Intervention"]
+
+        T ==>|<b>LLM:</b> assess| E
+        E ==>|<span style='font-size:32px'>M̂</span>| S
+        S ==>|<span style='font-size:32px'>X̂</span>| I
+        I ==>|<b>LLM:</b> generate| T
+    end
+
+    E -. context .-> Q
+    S -. context .-> Q
+    I -. judged .-> Q
+
+    classDef blue fill:#dbeafe,stroke:#2563eb,stroke-width:1.5px,color:#111827;
+    class Q,T,E,S blue;
